@@ -10,9 +10,18 @@ HISTORY_DAYS = 90
 NEMWEB_BASE = "https://nemweb.com.au/Reports/Current"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; AEMO-Dashboard/1.0)"}
 
+def clean(v):
+    """Strip whitespace and quotes from a CSV field."""
+    return v.strip().strip('"').strip("'")
+
 def normalise_ts(ts):
-    """Convert 2026/06/16 11:15:00 -> 2026-06-16 11:15:00"""
-    return ts.replace("/", "-") if ts else ts
+    return clean(ts).replace("/", "-")
+
+def sf(v):
+    try:
+        return float(clean(v))
+    except:
+        return None
 
 def get_links(path, pattern):
     url = f"{NEMWEB_BASE}/{path}/"
@@ -25,7 +34,6 @@ def get_links(path, pattern):
     matched = [l for l in links if re.search(pattern, l, re.IGNORECASE)]
     print(f"Matched zips: {len(matched)}")
     if not matched:
-        # Print all available zip names to help debug
         samples = [l.split("/")[-1] for l in links[-5:]]
         print(f"  Sample filenames: {samples}")
     return [("https://nemweb.com.au" + l if l.startswith("/") else l) for l in matched[-2:]]
@@ -38,15 +46,12 @@ def get_csv_lines(zip_url):
             if name.upper().endswith(".CSV"):
                 with zf.open(name) as f:
                     text = f.read().decode("utf-8", errors="replace")
-                    lines = [l for l in text.splitlines() if l.startswith("D,")]
-                    print(f"  {name}: {len(lines)} data rows")
+                    all_lines = text.splitlines()
+                    lines = [l for l in all_lines if l.startswith("D,")]
+                    # Print first D row to see exact column layout
+                    if lines:
+                        print(f"  {name}: {len(lines)} rows | first: {lines[0][:150]}")
     return lines
-
-def sf(v):
-    try:
-        return float(v.strip())
-    except:
-        return None
 
 def fetch_actual():
     print("\n=== ACTUAL DEMAND ===")
@@ -56,11 +61,17 @@ def fetch_actual():
             lines = get_csv_lines(url)
             for line in lines:
                 cols = line.split(",")
-                if len(cols) > 10 and cols[2].strip() == "REGIONSUM":
-                    region = cols[6].strip()
-                    ts     = normalise_ts(cols[4].strip())
+                if len(cols) > 10 and clean(cols[2]) == "REGIONSUM":
+                    # Print first matching row to verify column positions
+                    print(f"  REGIONSUM cols: {[clean(c) for c in cols[:12]]}")
+                    break
+            for line in lines:
+                cols = line.split(",")
+                if len(cols) > 10 and clean(cols[2]) == "REGIONSUM":
+                    region = clean(cols[6])
+                    ts     = normalise_ts(cols[4])
                     demand = sf(cols[7])
-                    if region in REGIONS and ts and demand:
+                    if region in REGIONS and ts and demand and demand < 100000:
                         records.append({"timestamp": ts, "region": region, "actual_demand_mw": demand})
         except Exception as e:
             print(f"  ERR: {e}")
@@ -72,25 +83,28 @@ def fetch_actual():
 def fetch_forecast():
     print("\n=== FORECAST DEMAND ===")
     records = []
-    # Try both known folder names
-    for folder in ["Predispatch_Reports", "PredispatchIS_Reports", "PreDispatch_Reports"]:
-        links = get_links(folder, r"PREDISPATCH")
-        if links:
-            for url in links:
-                try:
-                    lines = get_csv_lines(url)
-                    for line in lines:
-                        cols = line.split(",")
-                        if len(cols) > 9 and cols[2].strip() == "REGION_SOLUTION":
-                            region = cols[5].strip()
-                            ts     = normalise_ts(cols[6].strip())
-                            demand = sf(cols[9])
-                            if region in REGIONS and ts and demand:
-                                records.append({"timestamp": ts, "region": region, "forecast_demand_mw": demand})
-                except Exception as e:
-                    print(f"  ERR: {e}")
-            break
+    for url in get_links("Predispatch_Reports", r"PUBLIC_PREDISPATCH"):
+        try:
+            lines = get_csv_lines(url)
+            # Find REGION_SOLUTION rows and print first to see layout
+            for line in lines:
+                cols = line.split(",")
+                if len(cols) > 5 and clean(cols[2]) == "REGION_SOLUTION":
+                    print(f"  REGION_SOLUTION cols: {[clean(c) for c in cols[:14]]}")
+                    break
+            for line in lines:
+                cols = line.split(",")
+                if len(cols) > 9 and clean(cols[2]) == "REGION_SOLUTION":
+                    region = clean(cols[5])
+                    ts     = normalise_ts(cols[6])
+                    demand = sf(cols[9])
+                    if region in REGIONS and ts and demand and demand < 100000:
+                        records.append({"timestamp": ts, "region": region, "forecast_demand_mw": demand})
+        except Exception as e:
+            print(f"  ERR: {e}")
     print(f"  Records: {len(records)}")
+    if records:
+        print(f"  Sample: {records[0]}")
     return records
 
 def fetch_solar():
@@ -102,9 +116,9 @@ def fetch_solar():
             lines = get_csv_lines(url)
             for line in lines:
                 cols = line.split(",")
-                if len(cols) > 6 and cols[2].strip() == "ACTUAL":
-                    ts     = normalise_ts(cols[4].strip())
-                    region = cols[5].strip()
+                if len(cols) > 6 and clean(cols[2]) == "ACTUAL":
+                    ts     = normalise_ts(cols[4])
+                    region = clean(cols[5])
                     power  = sf(cols[6])
                     if region in REGIONS and ts and power is not None:
                         records.append({"timestamp": ts, "region": region, "rooftop_actual_mw": power})
@@ -116,9 +130,9 @@ def fetch_solar():
             lines = get_csv_lines(url)
             for line in lines:
                 cols = line.split(",")
-                if len(cols) > 7 and cols[2].strip() == "FORECAST":
-                    ts     = normalise_ts(cols[6].strip())
-                    region = cols[5].strip()
+                if len(cols) > 7 and clean(cols[2]) == "FORECAST":
+                    ts     = normalise_ts(cols[6])
+                    region = clean(cols[5])
                     power  = sf(cols[7])
                     if region in REGIONS and ts and power is not None:
                         records.append({"timestamp": ts, "region": region, "rooftop_forecast_mw": power})
@@ -126,6 +140,8 @@ def fetch_solar():
             print(f"  ERR forecast solar: {e}")
 
     print(f"  Records: {len(records)}")
+    if records:
+        print(f"  Sample: {records[0]}")
     return records
 
 def merge(actual, forecast, solar):
@@ -185,13 +201,12 @@ def main():
         key = (r["timestamp"], r["region"])
         all_by_key[key] = {**all_by_key.get(key, {}), **r}
 
-    # Use string prefix match safe for both date formats
     cutoff = (datetime.now(timezone.utc) - timedelta(days=HISTORY_DAYS)).strftime("%Y-%m-%d")
     all_rows = sorted(
-        [r for r in all_by_key.values() if r.get("timestamp","")[:10].replace("/","-") >= cutoff],
+        [r for r in all_by_key.values() if normalise_ts(r.get("timestamp",""))[:10] >= cutoff],
         key=lambda x: x["timestamp"]
     )
-    print(f"Total rows after cutoff filter: {len(all_rows)}")
+    print(f"Total rows after cutoff: {len(all_rows)}")
 
     fields = ["timestamp","region","actual_demand_mw","forecast_demand_mw","rooftop_actual_mw","rooftop_forecast_mw"]
     with open(csv_path, "w", newline="") as f:
