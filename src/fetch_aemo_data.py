@@ -79,32 +79,16 @@ def fetch_forecast():
     for url in get_links("Predispatch_Reports", r"PUBLIC_PREDISPATCH"):
         try:
             lines = get_csv_lines(url)
-            # Diagnostic: print every unique row-type combination present in this file
-            row_types = set()
-            for line in lines:
-                cols = line.split(",")
-                if len(cols) > 2:
-                    row_types.add((clean(cols[1]), clean(cols[2])))
-            print(f"  Row types found: {row_types}")
-
-            # Try REGION_SOLUTION first
             shown = False
             for line in lines:
                 cols = line.split(",")
-                if len(cols) > 9 and clean(cols[2]) == "REGION_SOLUTION":
+                if len(cols) > 2 and clean(cols[1]) == "PDREGION":
                     if not shown:
-                        print(f"  REGION_SOLUTION cols: {[clean(c) for c in cols[:14]]}")
+                        print(f"  PDREGION cols: {[clean(c) for c in cols[:14]]}")
                         shown = True
-                    ts     = normalise_ts(cols[4])
-                    region = clean(cols[5])
-                    demand = sf(cols[9])
-                    if region in REGIONS and ts and demand is not None and 0 < demand < 100000:
-                        records.append({"timestamp": ts, "region": region, "forecast_demand_mw": demand})
         except Exception as e:
-            print(f"  ERR: {e}")
+            print(f"  ERR diag: {e}")
     print(f"  Records: {len(records)}")
-    if records:
-        print(f"  Sample: {records[0]}")
     return records
 
 def fetch_solar():
@@ -165,14 +149,13 @@ def peak_days(rows, n=10):
     dm = defaultdict(float)
     for row in rows:
         k = (row.get("region",""), row.get("timestamp","")[:10])
-        d = row.get("actual_demand_mw") or 0
+        raw = row.get("actual_demand_mw") or 0
+        try:
+            d = float(raw)
+        except (TypeError, ValueError):
+            d = 0
         if d > dm[k]:
             dm[k] = d
-    by_r = defaultdict(list)
-    for (reg, date), val in dm.items():
-        if val > 0:
-            by_r[reg].append({"region": reg, "date": date, "peak_demand_mw": val})
-    return {r: sorted(v, key=lambda x: x["peak_demand_mw"], reverse=True)[:n] for r, v in by_r.items()}
 
 def main():
     print("=== AEMO Ingest ===")
