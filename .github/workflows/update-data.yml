@@ -29,7 +29,7 @@ jobs:
       - name: Fetch AEMO data
         run: python src/fetch_aemo_data.py
 
-      - - name: Commit & push updated data
+      - name: Commit & push updated data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
