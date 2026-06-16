@@ -1,5 +1,9 @@
 """
-fetch_aemo_data.py - with verbose debugging
+fetch_aemo_data.py
+Fetches AEMO forecast vs actual demand and rooftop solar from NEMWEB.
+Designed to run as a GitHub Actions scheduled job.
+
+Regions: NSW1, VIC1, QLD1, SA1, TAS1
 """
 
 import requests
