@@ -46,9 +46,9 @@ def get_csv_lines(zip_url):
     return lines
 
 def fetch_actual():
-    # DISPATCHIS REGIONSUM confirmed layout:
-    # D,DISPATCH,REGIONSUM,<ver>,SETTLEMENTDATE,RUNNO,REGIONID,INTERVENTION,TOTALDEMAND,...
-    #  0    1         2     3         4            5      6          7            8
+    # Confirmed from live data:
+    # D,DISPATCH,REGIONSUM,9,SETTLEMENTDATE,RUNNO,REGIONID,<dispatch_interval>,INTERVENTION,TOTALDEMAND
+    #  0    1         2    3        4          5      6            7               8            9
     print("\n=== ACTUAL DEMAND ===")
     records = []
     for url in get_links("DispatchIS_Reports", r"PUBLIC_DISPATCHIS"):
@@ -57,13 +57,13 @@ def fetch_actual():
             shown = False
             for line in lines:
                 cols = line.split(",")
-                if len(cols) > 8 and clean(cols[2]) == "REGIONSUM":
+                if len(cols) > 9 and clean(cols[2]) == "REGIONSUM":
                     if not shown:
                         print(f"  REGIONSUM cols: {[clean(c) for c in cols[:10]]}")
                         shown = True
                     ts     = normalise_ts(cols[4])
                     region = clean(cols[6])
-                    demand = sf(cols[8])
+                    demand = sf(cols[9])
                     if region in REGIONS and ts and demand is not None and 0 < demand < 100000:
                         records.append({"timestamp": ts, "region": region, "actual_demand_mw": demand})
         except Exception as e:
@@ -74,20 +74,26 @@ def fetch_actual():
     return records
 
 def fetch_forecast():
-    # PREDISPATCH REGION_SOLUTION confirmed layout (AEMO MMS schema):
-    # D,PREDISPATCH,REGION_SOLUTION,<ver>,DATETIME,REGIONID,PERIODID,INTERVENTION,RRP,TOTALDEMAND,...
-    #  0      1            2           3      4         5        6        7        8       9
     print("\n=== FORECAST DEMAND ===")
     records = []
     for url in get_links("Predispatch_Reports", r"PUBLIC_PREDISPATCH"):
         try:
             lines = get_csv_lines(url)
+            # Diagnostic: print every unique row-type combination present in this file
+            row_types = set()
+            for line in lines:
+                cols = line.split(",")
+                if len(cols) > 2:
+                    row_types.add((clean(cols[1]), clean(cols[2])))
+            print(f"  Row types found: {row_types}")
+
+            # Try REGION_SOLUTION first
             shown = False
             for line in lines:
                 cols = line.split(",")
                 if len(cols) > 9 and clean(cols[2]) == "REGION_SOLUTION":
                     if not shown:
-                        print(f"  REGION_SOLUTION cols: {[clean(c) for c in cols[:12]]}")
+                        print(f"  REGION_SOLUTION cols: {[clean(c) for c in cols[:14]]}")
                         shown = True
                     ts     = normalise_ts(cols[4])
                     region = clean(cols[5])
@@ -102,23 +108,15 @@ def fetch_forecast():
     return records
 
 def fetch_solar():
-    # ROOFTOP ACTUAL: D,ROOFTOP,ACTUAL,<ver>,INTERVAL_DATETIME,REGIONID,POWER,QI,TYPE,LASTCHANGED
-    #                  0    1      2     3          4              5      6   7   8      9
-    # ROOFTOP FORECAST: D,ROOFTOP,FORECAST,<ver>,LASTCHANGED,REGIONID,INTERVAL_DATETIME,POWERMEAN,...
-    #                    0    1       2      3        4          5            6              7
     print("\n=== ROOFTOP SOLAR ===")
     records = []
 
     for url in get_links("ROOFTOP_PV/ACTUAL", r"ROOFTOP_PV_ACTUAL"):
         try:
             lines = get_csv_lines(url)
-            shown = False
             for line in lines:
                 cols = line.split(",")
                 if len(cols) > 6 and clean(cols[2]) == "ACTUAL":
-                    if not shown:
-                        print(f"  ROOFTOP ACTUAL cols: {[clean(c) for c in cols[:10]]}")
-                        shown = True
                     ts     = normalise_ts(cols[4])
                     region = clean(cols[5])
                     power  = sf(cols[6])
@@ -130,13 +128,9 @@ def fetch_solar():
     for url in get_links("ROOFTOP_PV/FORECAST", r"ROOFTOP_PV_FORECAST"):
         try:
             lines = get_csv_lines(url)
-            shown = False
             for line in lines:
                 cols = line.split(",")
                 if len(cols) > 7 and clean(cols[2]) == "FORECAST":
-                    if not shown:
-                        print(f"  ROOFTOP FORECAST cols: {[clean(c) for c in cols[:10]]}")
-                        shown = True
                     ts     = normalise_ts(cols[6])
                     region = clean(cols[5])
                     power  = sf(cols[7])
@@ -146,8 +140,6 @@ def fetch_solar():
             print(f"  ERR forecast solar: {e}")
 
     print(f"  Records: {len(records)}")
-    if records:
-        print(f"  Sample: {records[0]}")
     return records
 
 def merge(actual, forecast, solar):
@@ -225,3 +217,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
