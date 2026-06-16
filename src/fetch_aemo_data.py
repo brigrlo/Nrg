@@ -74,6 +74,9 @@ def fetch_actual():
     return records
 
 def fetch_forecast():
+    # PDREGION confirmed layout (from live data):
+    # D,PDREGION,,<ver>,RUN_DATETIME,PERIODID,REGIONID,INTERVAL_DATETIME,RRP,?,TOTALDEMAND,...
+    #  0    1    2   3        4          5         6          7          8  9       10
     print("\n=== FORECAST DEMAND ===")
     records = []
     for url in get_links("Predispatch_Reports", r"PUBLIC_PREDISPATCH"):
@@ -82,13 +85,20 @@ def fetch_forecast():
             shown = False
             for line in lines:
                 cols = line.split(",")
-                if len(cols) > 2 and clean(cols[1]) == "PDREGION":
+                if len(cols) > 10 and clean(cols[1]) == "PDREGION":
                     if not shown:
                         print(f"  PDREGION cols: {[clean(c) for c in cols[:14]]}")
                         shown = True
+                    ts     = normalise_ts(cols[7])
+                    region = clean(cols[6])
+                    demand = sf(cols[10])
+                    if region in REGIONS and ts and demand is not None and 0 < demand < 100000:
+                        records.append({"timestamp": ts, "region": region, "forecast_demand_mw": demand})
         except Exception as e:
-            print(f"  ERR diag: {e}")
+            print(f"  ERR: {e}")
     print(f"  Records: {len(records)}")
+    if records:
+        print(f"  Sample: {records[0]}")
     return records
 
 def fetch_solar():
