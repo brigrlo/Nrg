@@ -11,7 +11,6 @@ NEMWEB_BASE = "https://nemweb.com.au/Reports/Current"
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; AEMO-Dashboard/1.0)"}
 
 def clean(v):
-    """Strip whitespace and quotes from a CSV field."""
     return v.strip().strip('"').strip("'")
 
 def normalise_ts(ts):
@@ -33,9 +32,6 @@ def get_links(path, pattern):
     links = re.findall(r'href="([^"]+\.zip)"', r.text, re.IGNORECASE)
     matched = [l for l in links if re.search(pattern, l, re.IGNORECASE)]
     print(f"Matched zips: {len(matched)}")
-    if not matched:
-        samples = [l.split("/")[-1] for l in links[-5:]]
-        print(f"  Sample filenames: {samples}")
     return [("https://nemweb.com.au" + l if l.startswith("/") else l) for l in matched[-2:]]
 
 def get_csv_lines(zip_url):
@@ -46,32 +42,29 @@ def get_csv_lines(zip_url):
             if name.upper().endswith(".CSV"):
                 with zf.open(name) as f:
                     text = f.read().decode("utf-8", errors="replace")
-                    all_lines = text.splitlines()
-                    lines = [l for l in all_lines if l.startswith("D,")]
-                    # Print first D row to see exact column layout
-                    if lines:
-                        print(f"  {name}: {len(lines)} rows | first: {lines[0][:150]}")
+                    lines = [l for l in text.splitlines() if l.startswith("D,")]
     return lines
 
 def fetch_actual():
+    # DISPATCHIS REGIONSUM confirmed layout:
+    # D,DISPATCH,REGIONSUM,<ver>,SETTLEMENTDATE,RUNNO,REGIONID,INTERVENTION,TOTALDEMAND,...
+    #  0    1         2     3         4            5      6          7            8
     print("\n=== ACTUAL DEMAND ===")
     records = []
     for url in get_links("DispatchIS_Reports", r"PUBLIC_DISPATCHIS"):
         try:
             lines = get_csv_lines(url)
+            shown = False
             for line in lines:
                 cols = line.split(",")
-                if len(cols) > 10 and clean(cols[2]) == "REGIONSUM":
-                    # Print first matching row to verify column positions
-                    print(f"  REGIONSUM cols: {[clean(c) for c in cols[:12]]}")
-                    break
-            for line in lines:
-                cols = line.split(",")
-                if len(cols) > 10 and clean(cols[2]) == "REGIONSUM":
-                    region = clean(cols[6])
+                if len(cols) > 8 and clean(cols[2]) == "REGIONSUM":
+                    if not shown:
+                        print(f"  REGIONSUM cols: {[clean(c) for c in cols[:10]]}")
+                        shown = True
                     ts     = normalise_ts(cols[4])
-                    demand = sf(cols[7])
-                    if region in REGIONS and ts and demand and demand < 100000:
+                    region = clean(cols[6])
+                    demand = sf(cols[8])
+                    if region in REGIONS and ts and demand is not None and 0 < demand < 100000:
                         records.append({"timestamp": ts, "region": region, "actual_demand_mw": demand})
         except Exception as e:
             print(f"  ERR: {e}")
@@ -81,24 +74,25 @@ def fetch_actual():
     return records
 
 def fetch_forecast():
+    # PREDISPATCH REGION_SOLUTION confirmed layout (AEMO MMS schema):
+    # D,PREDISPATCH,REGION_SOLUTION,<ver>,DATETIME,REGIONID,PERIODID,INTERVENTION,RRP,TOTALDEMAND,...
+    #  0      1            2           3      4         5        6        7        8       9
     print("\n=== FORECAST DEMAND ===")
     records = []
     for url in get_links("Predispatch_Reports", r"PUBLIC_PREDISPATCH"):
         try:
             lines = get_csv_lines(url)
-            # Find REGION_SOLUTION rows and print first to see layout
-            for line in lines:
-                cols = line.split(",")
-                if len(cols) > 5 and clean(cols[2]) == "REGION_SOLUTION":
-                    print(f"  REGION_SOLUTION cols: {[clean(c) for c in cols[:14]]}")
-                    break
+            shown = False
             for line in lines:
                 cols = line.split(",")
                 if len(cols) > 9 and clean(cols[2]) == "REGION_SOLUTION":
+                    if not shown:
+                        print(f"  REGION_SOLUTION cols: {[clean(c) for c in cols[:12]]}")
+                        shown = True
+                    ts     = normalise_ts(cols[4])
                     region = clean(cols[5])
-                    ts     = normalise_ts(cols[6])
                     demand = sf(cols[9])
-                    if region in REGIONS and ts and demand and demand < 100000:
+                    if region in REGIONS and ts and demand is not None and 0 < demand < 100000:
                         records.append({"timestamp": ts, "region": region, "forecast_demand_mw": demand})
         except Exception as e:
             print(f"  ERR: {e}")
@@ -108,15 +102,23 @@ def fetch_forecast():
     return records
 
 def fetch_solar():
+    # ROOFTOP ACTUAL: D,ROOFTOP,ACTUAL,<ver>,INTERVAL_DATETIME,REGIONID,POWER,QI,TYPE,LASTCHANGED
+    #                  0    1      2     3          4              5      6   7   8      9
+    # ROOFTOP FORECAST: D,ROOFTOP,FORECAST,<ver>,LASTCHANGED,REGIONID,INTERVAL_DATETIME,POWERMEAN,...
+    #                    0    1       2      3        4          5            6              7
     print("\n=== ROOFTOP SOLAR ===")
     records = []
 
     for url in get_links("ROOFTOP_PV/ACTUAL", r"ROOFTOP_PV_ACTUAL"):
         try:
             lines = get_csv_lines(url)
+            shown = False
             for line in lines:
                 cols = line.split(",")
                 if len(cols) > 6 and clean(cols[2]) == "ACTUAL":
+                    if not shown:
+                        print(f"  ROOFTOP ACTUAL cols: {[clean(c) for c in cols[:10]]}")
+                        shown = True
                     ts     = normalise_ts(cols[4])
                     region = clean(cols[5])
                     power  = sf(cols[6])
@@ -128,9 +130,13 @@ def fetch_solar():
     for url in get_links("ROOFTOP_PV/FORECAST", r"ROOFTOP_PV_FORECAST"):
         try:
             lines = get_csv_lines(url)
+            shown = False
             for line in lines:
                 cols = line.split(",")
                 if len(cols) > 7 and clean(cols[2]) == "FORECAST":
+                    if not shown:
+                        print(f"  ROOFTOP FORECAST cols: {[clean(c) for c in cols[:10]]}")
+                        shown = True
                     ts     = normalise_ts(cols[6])
                     region = clean(cols[5])
                     power  = sf(cols[7])
@@ -193,8 +199,6 @@ def main():
 
     new_rows = merge(actual, forecast, solar)
     print(f"Merged new rows: {len(new_rows)}")
-    if new_rows:
-        print(f"Sample merged: {new_rows[0]}")
 
     all_by_key = {(r["timestamp"], r["region"]): r for r in existing}
     for r in new_rows:
