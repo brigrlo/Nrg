@@ -1,0 +1,38 @@
+name: Update AEMO Data
+
+on:
+  schedule:
+    # Run every 30 minutes (AEMO pre-dispatch updates every 30 min)
+    - cron: "*/30 * * * *"
+  workflow_dispatch:   # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: write      # Needed to commit updated CSVs back to repo
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch AEMO data
+        run: python src/fetch_aemo_data.py
+
+      - name: Commit & push updated data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          # Only commit if something changed
+          git diff --cached --quiet || git commit -m "chore: update AEMO data $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
