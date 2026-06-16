@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AEMO Energy Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    /* ── Design tokens ─────────────────────────────────────────────────── */
+    :root {
+      --bg:         #0b0f1a;
+      --surface:    #131929;
+      --border:     #1e2d47;
+      --accent:     #00c2ff;
+      --accent2:    #f9a825;
+      --solar:      #ffd54f;
+      --solar-fc:   #ff8f00;
+      --forecast:   #4dd0e1;
+      --actual:     #ef5350;
+      --text:       #e8eaf6;
+      --muted:      #7986a8;
+      --font-mono:  "JetBrains Mono", "Fira Mono", monospace;
+      --font-body:  "Inter", system-ui, sans-serif;
+      --radius:     8px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-body);
+      min-height: 100vh;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.2rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .header-left h1 {
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+    }
+    .header-left p {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 2px;
+      font-family: var(--font-mono);
+    }
+    #last-updated {
+      font-size: 0.72rem;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      text-align: right;
+    }
+    .pulse {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #4caf50;
+      margin-right: 6px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.3; }
+    }
+
+    /* ── Controls ──────────────────────────────────────────────────────── */
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      padding: 1rem 2rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      align-items: center;
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+    }
+    select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.45rem 0.75rem;
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      font-family: var(--font-body);
+      cursor: pointer;
+      min-width: 180px;
+    }
+    select:focus { outline: 2px solid var(--accent); }
+
+    .toggle-group {
+      display: flex;
+      gap: 6px;
+      margin-top: auto;
+    }
+    .toggle-btn {
+      padding: 0.4rem 0.85rem;
+      border-radius: 20px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .toggle-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(0,194,255,0.08); }
+
+    .view-switcher {
+      display: flex;
+      gap: 6px;
+      margin-left: auto;
+    }
+    .view-btn {
+      padding: 0.4rem 1rem;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .view-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 700; }
+
+    /* ── Stats bar ─────────────────────────────────────────────────────── */
+    .stats-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 1px;
+      background: var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    .stat-card {
+      background: var(--surface);
+      padding: 1rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .stat-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    .stat-value { font-size: 1.6rem; font-weight: 700; font-family: var(--font-mono); line-height: 1; }
+    .stat-value.accent { color: var(--accent); }
+    .stat-value.solar  { color: var(--solar); }
+    .stat-value.delta.positive { color: #4caf50; }
+    .stat-value.delta.negative { color: var(--actual); }
+    .stat-unit { font-size: 0.72rem; color: var(--muted); }
+
+    /* ── Main chart area ───────────────────────────────────────────────── */
+    main {
+      padding: 1.5rem 2rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+    }
+    .chart-card h2 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+    .chart-wrapper {
+      position: relative;
+      height: 300px;
+    }
+
+    /* ── Peak days panel ───────────────────────────────────────────────── */
+    .peak-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+    }
+    .peak-panel h2 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+    .peak-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .peak-table th {
+      text-align: left;
+      color: var(--muted);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.4rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .peak-table td {
+      padding: 0.5rem 0.6rem;
+      border-bottom: 1px solid rgba(30,45,71,0.6);
+      font-family: var(--font-mono);
+    }
+    .peak-table tr:hover td { background: rgba(0,194,255,0.04); cursor: pointer; }
+    .rank-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px; height: 22px;
+      border-radius: 50%;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
+    .rank-1 { background: #ffd700; color: #000; }
+    .rank-2 { background: #c0c0c0; color: #000; }
+    .rank-3 { background: #cd7f32; color: #fff; }
+    .rank-other { background: var(--border); color: var(--muted); }
+
+    /* ── Loading / error ───────────────────────────────────────────────── */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 200px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      gap: 10px;
+    }
+    .spinner {
+      width: 20px; height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Legend ────────────────────────────────────────────────────────── */
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 0.75rem;
+      font-size: 0.75rem;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+    }
+    .legend-dot {
+      width: 10px; height: 3px;
+      border-radius: 2px;
+    }
+
+    /* ── Footer ────────────────────────────────────────────────────────── */
+    footer {
+      padding: 1rem 2rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.7rem;
+      color: var(--muted);
+      font-family: var(--font-mono);
+    }
+
+    @media (max-width: 600px) {
+      header, .controls, main { padding-left: 1rem; padding-right: 1rem; }
+      .stats-bar { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────────────── -->
+<header>
+  <div class="header-left">
+    <h1>⚡ AEMO Energy Dashboard</h1>
+    <p>Forecast vs Actual Demand · Rooftop Solar · NEM Regions</p>
+  </div>
+  <div id="last-updated">
+    <span class="pulse"></span>Loading data…
+  </div>
+</header>
+
+<!-- ── Controls ────────────────────────────────────────────────────────────── -->
+<div class="controls">
+  <div class="control-group">
+    <label>Region</label>
+    <select id="region-select">
+      <option value="NSW1">New South Wales</option>
+      <option value="VIC1">Victoria</option>
+      <option value="QLD1">Queensland</option>
+      <option value="SA1">South Australia</option>
+      <option value="TAS1">Tasmania</option>
+    </select>
+  </div>
+
+  <div class="control-group">
+    <label>Time Window</label>
+    <select id="window-select">
+      <option value="1">Last 24 hours</option>
+      <option value="7" selected>Last 7 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="90">Last 90 days</option>
+    </select>
+  </div>
+
+  <div class="control-group">
+    <label>📅 Peak Day (Top 10)</label>
+    <select id="peak-select">
+      <option value="">— Select a peak demand day —</option>
+    </select>
+  </div>
+
+  <div class="control-group">
+    <label>Layers</label>
+    <div class="toggle-group">
+      <button class="toggle-btn active" data-layer="forecast">Forecast</button>
+      <button class="toggle-btn active" data-layer="actual">Actual</button>
+      <button class="toggle-btn active" data-layer="solar">Solar</button>
+    </div>
+  </div>
+
+  <div class="view-switcher">
+    <button class="view-btn active" data-view="line">Line</button>
+    <button class="view-btn" data-view="area">Area</button>
+  </div>
+</div>
+
+<!-- ── Stats bar ────────────────────────────────────────────────────────────── -->
+<div class="stats-bar">
+  <div class="stat-card">
+    <span class="stat-label">Current Demand</span>
+    <span class="stat-value accent" id="stat-current">—</span>
+    <span class="stat-unit">MW actual</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-label">Current Forecast</span>
+    <span class="stat-value" id="stat-forecast">—</span>
+    <span class="stat-unit">MW forecast</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-label">Forecast Error</span>
+    <span class="stat-value delta" id="stat-error">—</span>
+    <span class="stat-unit">MW (actual − forecast)</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-label">Rooftop Solar</span>
+    <span class="stat-value solar" id="stat-solar">—</span>
+    <span class="stat-unit">MW generation</span>
+  </div>
+  <div class="stat-card">
+    <span class="stat-label">Period Peak</span>
+    <span class="stat-value" id="stat-peak">—</span>
+    <span class="stat-unit">MW (window max)</span>
+  </div>
+</div>
+
+<!-- ── Charts ───────────────────────────────────────────────────────────────── -->
+<main>
+  <div class="chart-card">
+    <h2>Demand: Forecast vs Actual</h2>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:var(--actual)"></span>Actual Demand</span>
+      <span class="legend-item"><span class="legend-dot" style="background:var(--forecast); border-top: 2px dashed var(--forecast)"></span>Forecast Demand</span>
+    </div>
+    <div class="chart-wrapper">
+      <canvas id="demand-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <h2>Rooftop Solar: Actual vs Forecast</h2>
+    <div class="legend">
+      <span class="legend-item"><span class="legend-dot" style="background:var(--solar)"></span>Solar Actual</span>
+      <span class="legend-item"><span class="legend-dot" style="background:var(--solar-fc)"></span>Solar Forecast</span>
+    </div>
+    <div class="chart-wrapper">
+      <canvas id="solar-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <h2>Forecast Error (Actual − Forecast)</h2>
+    <div class="chart-wrapper" style="height:180px">
+      <canvas id="error-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Peak demand table -->
+  <div class="peak-panel">
+    <h2>🏆 Top 10 Peak Demand Days — <span id="peak-region-label">NSW</span></h2>
+    <div id="peak-table-container">
+      <div class="loading"><div class="spinner"></div> Loading peak data…</div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  Data source: AEMO NEMWEB · Auto-refreshed every 30 min via GitHub Actions · All times in AEST/AEDT
+</footer>
+
+<script src="dashboard.js"></script>
+</body>
+</html>
