@@ -16,62 +16,72 @@ def get_links(path, pattern):
     r = requests.get(url, timeout=30, headers=HEADERS)
     print(f"Status: {r.status_code}")
     if r.status_code != 200:
-        print(f"Body: {r.text[:300]}")
         return []
     links = re.findall(r'href="([^"]+\.zip)"', r.text, re.IGNORECASE)
     matched = [l for l in links if re.search(pattern, l, re.IGNORECASE)]
     print(f"Matched zips: {len(matched)}")
     return [("https://nemweb.com.au" + l if l.startswith("/") else l) for l in matched[-2:]]
 
-def extract_csv(zip_url):
+def get_csv_lines(zip_url):
     r = requests.get(zip_url, timeout=60, headers=HEADERS)
-    print(f"  ZIP {r.status_code} {len(r.content)} bytes")
-    rows = []
+    lines = []
     with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
         for name in zf.namelist():
             if name.upper().endswith(".CSV"):
                 with zf.open(name) as f:
-                    lines = f.read().decode("utf-8", errors="replace").splitlines()
-                    dlines = [l for l in lines if l.startswith("D,")]
-                    print(f"  {name}: {len(lines)} lines, {len(dlines)} data rows")
-                    if lines:
-                        print(f"  First line: {lines[0][:120]}")
-                    rows.extend(list(csv.DictReader(dlines)))
-    return rows
+                    text = f.read().decode("utf-8", errors="replace")
+                    lines = [l for l in text.splitlines() if l.startswith("D,")]
+                    print(f"  {name}: {len(lines)} data rows")
+    return lines
 
 def sf(v):
     try:
-        return float(v)
+        return float(v.strip())
     except:
         return None
 
 def fetch_actual():
-    print("\n=== ACTUAL DEMAND ===")
+    # Row format: D,DISPATCH,UNIT_SCADA,1,SETTLEMENTDATE,DUID,SCADAVALUE,...
+    # We need TOTALDEMAND per region — this file is per-unit, not per-region.
+    # Use DISPATCH_REGIONSUM instead.
+    print("\n=== ACTUAL DEMAND (REGIONSUM) ===")
     records = []
-    for url in get_links("Dispatch_SCADA", r"PUBLIC_DISPATCHSCADA"):
+    for url in get_links("DispatchIS_Reports", r"PUBLIC_DISPATCHIS"):
         try:
-            rows = extract_csv(url)
-            if rows:
-                print(f"  Keys: {list(rows[0].keys())[:10]}")
-            for row in rows:
-                if row.get("REGIONID") in REGIONS:
-                    records.append({"timestamp": row.get("SETTLEMENTDATE","").strip(), "region": row.get("REGIONID","").strip(), "actual_demand_mw": sf(row.get("TOTALDEMAND"))})
+            lines = get_csv_lines(url)
+            for line in lines:
+                cols = line.split(",")
+                # REGION solution rows: D,DISPATCH,REGIONSUM,1,...
+                if len(cols) > 10 and cols[2].strip() == "REGIONSUM":
+                    # cols: D,DISPATCH,REGIONSUM,1,RUN_DATETIME,INTERVENTION,REGIONID,
+                    #        TOTALDEMAND,AVAILABLEGENERATION,...
+                    region = cols[6].strip()
+                    ts     = cols[4].strip()
+                    demand = sf(cols[7])
+                    if region in REGIONS and ts and demand:
+                        records.append({"timestamp": ts, "region": region, "actual_demand_mw": demand})
         except Exception as e:
             print(f"  ERR: {e}")
     print(f"  Records: {len(records)}")
     return records
 
 def fetch_forecast():
+    # Pre-dispatch region solution
     print("\n=== FORECAST DEMAND ===")
     records = []
     for url in get_links("Predispatch_Reports", r"PUBLIC_PREDISPATCH_REGION_SOLUTION"):
         try:
-            rows = extract_csv(url)
-            if rows:
-                print(f"  Keys: {list(rows[0].keys())[:10]}")
-            for row in rows:
-                if row.get("REGIONID") in REGIONS:
-                    records.append({"timestamp": row.get("DATETIME", row.get("PERIODID","")).strip(), "region": row.get("REGIONID","").strip(), "forecast_demand_mw": sf(row.get("TOTALDEMAND"))})
+            lines = get_csv_lines(url)
+            for line in lines:
+                cols = line.split(",")
+                # D,PREDISPATCH,REGION_SOLUTION,2,PREDISPATCH_SEQ,REGIONID,PERIODID,...,TOTALDEMAND
+                if len(cols) > 10 and cols[2].strip() == "REGION_SOLUTION":
+                    region = cols[5].strip()
+                    ts     = cols[6].strip()
+                    # TOTALDEMAND is col 9 in pre-dispatch region solution
+                    demand = sf(cols[9]) if len(cols) > 9 else None
+                    if region in REGIONS and ts and demand:
+                        records.append({"timestamp": ts, "region": region, "forecast_demand_mw": demand})
         except Exception as e:
             print(f"  ERR: {e}")
     print(f"  Records: {len(records)}")
@@ -80,19 +90,37 @@ def fetch_forecast():
 def fetch_solar():
     print("\n=== ROOFTOP SOLAR ===")
     records = []
-    subdirs = [("ACTUAL", "rooftop_actual_mw"), ("FORECAST", "rooftop_forecast_mw")]
-    for subdir, label in subdirs:
-        print(f"  Subdir: {subdir}")
-        for url in get_links(f"ROOFTOP_PV/{subdir}", r"ROOFTOP_PV"):
-            try:
-                rows = extract_csv(url)
-                if rows:
-                    print(f"  Keys: {list(rows[0].keys())[:10]}")
-                for row in rows:
-                    if row.get("REGIONID") in REGIONS:
-                        records.append({"timestamp": row.get("INTERVAL_DATETIME","").strip(), "region": row.get("REGIONID","").strip(), label: sf(row.get("POWER"))})
-            except Exception as e:
-                print(f"  ERR: {e}")
+
+    # ACTUAL: D,ROOFTOP,ACTUAL,2,INTERVAL_DATETIME,REGIONID,POWER,...
+    for url in get_links("ROOFTOP_PV/ACTUAL", r"ROOFTOP_PV_ACTUAL"):
+        try:
+            lines = get_csv_lines(url)
+            for line in lines:
+                cols = line.split(",")
+                if len(cols) > 6 and cols[2].strip() == "ACTUAL":
+                    ts     = cols[4].strip()
+                    region = cols[5].strip()
+                    power  = sf(cols[6])
+                    if region in REGIONS and ts and power is not None:
+                        records.append({"timestamp": ts, "region": region, "rooftop_actual_mw": power})
+        except Exception as e:
+            print(f"  ERR actual solar: {e}")
+
+    # FORECAST: D,ROOFTOP,FORECAST,1,LASTCHANGED,REGIONID,INTERVAL_DATETIME,POWERMEAN,...
+    for url in get_links("ROOFTOP_PV/FORECAST", r"ROOFTOP_PV_FORECAST"):
+        try:
+            lines = get_csv_lines(url)
+            for line in lines:
+                cols = line.split(",")
+                if len(cols) > 7 and cols[2].strip() == "FORECAST":
+                    ts     = cols[6].strip()
+                    region = cols[5].strip()
+                    power  = sf(cols[7])
+                    if region in REGIONS and ts and power is not None:
+                        records.append({"timestamp": ts, "region": region, "rooftop_forecast_mw": power})
+        except Exception as e:
+            print(f"  ERR forecast solar: {e}")
+
     print(f"  Records: {len(records)}")
     return records
 
@@ -130,7 +158,7 @@ def peak_days(rows, n=10):
 
 def main():
     print("=== AEMO Ingest ===")
-    csv_path = OUTPUT_DIR / "forecast_vs_actual.csv"
+    csv_path   = OUTPUT_DIR / "forecast_vs_actual.csv"
     peaks_path = OUTPUT_DIR / "peak_days.json"
 
     existing = []
@@ -139,9 +167,9 @@ def main():
             existing = list(csv.DictReader(f))
     print(f"Existing rows: {len(existing)}")
 
-    actual = fetch_actual()
+    actual   = fetch_actual()
     forecast = fetch_forecast()
-    solar = fetch_solar()
+    solar    = fetch_solar()
 
     new_rows = merge(actual, forecast, solar)
     all_by_key = {(r["timestamp"], r["region"]): r for r in existing}
